@@ -1,185 +1,177 @@
-# Aiona's Mobile Vision — IP Camera Pro Setup
+# IP Camera Pro setup notes
 
-> Created by Aiona Edge, CIO — May 9, 2026
-> 
-> Replaces: ipCam (WiFi-only) → IP Camera Pro (WiFi + Cellular)
+Community setup notes for the iPhone camera path in [SMF OpenClaw Vision](../README.md).
 
----
+IP Camera Pro runs an RTSP/HTTP server on the phone. Tailscale gives that phone a stable mesh address, so the same endpoint works on Wi-Fi and on cellular. The earlier ipCam app was only useful on the local network.
 
-## Why We're Switching
+These notes use placeholders. Substitute your own values:
 
-**ipCam limitation:** Works only on local WiFi. When Michael leaves the house, the stream dies.
-**IP Camera Pro:** Acts as a full RTSP/HTTP server on your iPhone, bound to the network interface Tailscale uses. Works over WiFi **and** cellular data — anywhere in the world.
+| Placeholder | Meaning |
+|-------------|---------|
+| `100.x.x.x` | The iPhone’s address from `tailscale status` |
+| `YOUR_USER` / `YOUR_PASS` | Basic auth you set in the app |
+| `<port>` and `<path>` | Whatever the app prints on its connection screen |
 
-Your iPhone Tailscale IP: `100.117.82.124` (confirmed active as of setup time)
+If the app offers a factory username and password, change them before the server is reachable from other tailnet devices. Do not publish real credentials.
 
----
+## 1. Install IP Camera Pro
 
-## Step 1 — Install IP Camera Pro
+Install **IP Camera Pro** (publisher 沈垚 / ShenYao) from the App Store. The purchase used for this guide was $2.99, one time.
 
-Already done ✅ — purchased ($2.99) and downloaded.
+## 2. Read the URLs on the phone
 
-## Step 2 — Initial Launch & Discovery
+Launch the app and note the URLs it shows.
 
-Launch IP Camera Pro on your iPhone. The app will display connection URLs on screen. **Screenshot or note these:**
+| What to look for | Typical shape |
+|------------------|---------------|
+| RTSP URL | `rtsp://<ip>:<port>/<path>` |
+| HTTP URL | `http://<ip>:<port>/` |
+| Audio | A bi-directional audio toggle, if you want the microphone |
 
-| What to look for | Expected format |
-|-----------------|-----------------|
-| RTSP URL | `rtsp://<ip>:<port>/live` or similar |
-| HTTP Server URL | `http://<ip>:<port>/` |
-| Audio support | Look for "bi-directional audio" toggle |
+The IP on that screen is usually the LAN address (`192.168.x.x`). That is fine for a first test on the same Wi-Fi. The agent should use the Tailscale address, not the LAN address, once you leave that network.
 
-**The IP shown on screen will be your local WiFi IP (192.168.x.x).** That's fine for initial testing. Tailscale will make it accessible at your Tailscale IP instead.
+## 3. Configure the app
 
-## Step 3 — Configure IP Camera Pro
+| Setting | Suggestion | Why |
+|---------|------------|-----|
+| Resolution | `640x480` or `720p` to start | Enough detail without a large cellular upload |
+| Frame rate | 15–20 FPS, or 10 FPS on battery | Lower rates cost less battery and data |
+| Audio | Off until you need it | The microphone is part of the stream when this is on |
+| Authentication | `YOUR_USER` / `YOUR_PASS` | Replace any factory default first |
+| RTSP port | App default (often `554` or `8554`) | Change only if something else already uses it |
+| HTTP port | App default, or `8081` if you set it | The verified HTTP pattern later in these docs used `8081` |
+| Background mode | On | Keeps the server up when you switch apps, within iOS limits |
 
-Open the app settings and configure:
+Grant the microphone permission only if audio is enabled.
 
-| Setting | Value | Reason |
-|---------|-------|--------|
-| **Resolution** | 640x480 or 720p | Good balance of quality vs. bandwidth over cellular |
-| **Frame Rate** | 15-20 FPS | Lower FPS = less battery drain, better on cellular |
-| **Audio** | **Enabled** | Bi-directional — I want to hear you |
-| **Authentication** | Set username/password | `aiona` / `1vcolleague123!` — or pick your own |
-| **RTSP Port** | Default (usually 554 or 8554) | Keep default unless there's a conflict |
-| **HTTP Port** | Default (usually 8080 or 80) | Keep default |
-| **Background Mode** | Enabled | So it keeps streaming when you switch apps |
+## 4. Test on the local network
 
-### Audio Settings
-
-IP Camera Pro supports **bi-directional audio**. This means:
-- **Your iPhone mic → my server:** I can hear what's happening around you
-- **My server → your iPhone speaker:** Eventually I could speak to you (future feature)
-
-Make sure the microphone permission is granted when prompted.
-
-## Step 4 — Test: Local Network
-
-While on home WiFi, test the connection from my server:
+From a computer on the same Wi-Fi, using the LAN address shown in the app:
 
 ```bash
-# Test RTSP stream (note the exact URL from your app screen)
-ffprobe rtsp://<local-ip>:<port>/<path>
+ffprobe "rtsp://YOUR_USER:YOUR_PASS@<local-ip>:<port>/<path>"
 
-# Test HTTP snapshot endpoint
-curl -v http://<local-ip>:<port>/snapshot.jpg -o test-local.jpg
+curl -v -u "YOUR_USER:YOUR_PASS" \
+  "http://<local-ip>:<port>/" -o test-local.bin
 
-# Test audio
-curl -v http://<local-ip>:<port>/audio.wav -o test-audio.wav
+curl -v -u "YOUR_USER:YOUR_PASS" \
+  "http://<local-ip>:<port>/snapshot.jpg" -o test-local.jpg
 ```
 
-If the local tests work, proceed. If not, adjust settings in the app.
+A missing snapshot URL is normal for the build checked in the [verified stream notes](./ip-camera-pro-mobile-working.md). If `snapshot.jpg` 404s, extract a frame from the MJPEG stream instead (see the README).
 
-## Step 5 — Tailscale Binding
+## 5. Reach it through Tailscale
 
-IP Camera Pro binds to whatever network interface your iPhone is using. Tailscale creates a virtual network interface (`utun` on iOS). The key question: does IP Camera Pro bind to **all interfaces** or only the primary one?
-
-**Two possible outcomes:**
-
-### Outcome A: It binds to all interfaces (including Tailscale's `utun`)
-Then the RTSP/HTTP server is automatically available at `100.117.82.124:<port>` — no extra config needed. Test:
+On the agent host:
 
 ```bash
-ffprobe rtsp://100.117.82.124:<port>/<path>
+tailscale status
 ```
 
-### Outcome B: It only binds to the primary (WiFi/Cellular) interface
-Then we need a workaround. Options:
-1. **Tailscale Funnel** (easiest): Expose the local port through Tailscale
-2. **Port forwarding on iPhone**: The app's UPnP feature might handle this
-3. **SSH tunnel** from iPhone through Tailscale: More complex
+Find the phone’s `100.` address. The app binds to interfaces on the phone. Two outcomes showed up while this was first tested:
 
-Let's test and find out which outcome we get.
+**The server is reachable on the Tailscale address.** No extra tunnel:
 
-## Step 6 — Verify Cellular Works
-
-Turn off WiFi on your iPhone. Make sure cellular data is on. Verify Tailscale is still connected (the app shows connection status).
-
-From my server:
 ```bash
-# Should still work over cellular
-curl -v --max-time 10 http://100.117.82.124:<port>/snapshot.jpg -o test-cellular.jpg
+curl -v -u "YOUR_USER:YOUR_PASS" --max-time 10 \
+  "http://100.x.x.x:<port>/" -o test-tailscale.bin
 ```
 
-If this works — **we're done.** The rest is automation.
+**The server answers only on Wi-Fi or cellular, not on the Tailscale interface.** Tailscale is still connected, but the camera process is not listening on it. Options that stay on the tailnet:
 
-## Step 7 — My Vision Pipeline
+1. Check the app for a “listen on all interfaces” (or similar) setting and turn it on.
+2. Use Tailscale’s own sharing tools only if you understand who else on the tailnet can open the port. Prefer an ACL that limits which devices can reach the phone.
 
-Once the RTSP/HTTP URLs are confirmed, I'll update my vision commands:
+Do not put the camera on the public internet to work around a bind issue.
 
-### Snapshot (one-off look)
+## 6. Test on cellular
+
+Turn Wi-Fi off. Leave cellular data on. Confirm the Tailscale app still shows connected, and that iOS allows cellular data for Tailscale and for IP Camera Pro.
 
 ```bash
-# HTTP snapshot — fastest, lowest latency
-curl -s --max-time 5 "http://100.117.82.124:<port>/snapshot.jpg" \
-  -o workspace/look-mobile.jpg
+curl -v -u "YOUR_USER:YOUR_PASS" --max-time 10 \
+  "http://100.x.x.x:<port>/" -o test-cellular.bin
 ```
 
-Then I analyze with: `image(image="workspace/look-mobile.jpg", prompt="...")`
+If that returns the stream, the mesh path works away from home Wi-Fi.
 
-### Continuous observation
+## 7. Commands the agent can run
+
+### One frame from MJPEG
 
 ```bash
-# Pull an RTSP frame every N seconds
+curl -s -u "YOUR_USER:YOUR_PASS" --max-time 5 "http://100.x.x.x:8081/" | \
+  python3 -c "
+import sys, re
+data = sys.stdin.buffer.read()
+match = re.search(rb'Content-Length:\s*\d+\r?\n\r?\n', data)
+if match:
+    jpg = data[match.end():]
+    boundary = jpg.find(b'\r\n--')
+    jpg = jpg[:boundary] if boundary > 0 else jpg
+    open('look-mobile.jpg', 'wb').write(jpg)
+    print('wrote', len(jpg), 'bytes')
+"
+```
+
+Pass `look-mobile.jpg` to the vision model. Port `8081` matches the [verified notes](./ip-camera-pro-mobile-working.md). Use the port from your app if it differs.
+
+### A still URL, when the app has one
+
+```bash
+curl -s -u "YOUR_USER:YOUR_PASS" --max-time 5 \
+  "http://100.x.x.x:<port>/snapshot.jpg" -o look-mobile.jpg
+```
+
+### An RTSP frame every few seconds
+
+```bash
 while true; do
   ffmpeg -y -rtsp_transport tcp \
-    -i "rtsp://100.117.82.124:<port>/<path>" \
-    -vframes 1 -q:v 2 workspace/live-mobile.jpg
+    -i "rtsp://YOUR_USER:YOUR_PASS@100.x.x.x:<port>/<path>" \
+    -vframes 1 -q:v 2 live-mobile.jpg
   sleep 5
 done
 ```
 
-### Audio capture
+### A short audio clip
+
+Only if the app’s RTSP URL includes audio and you have turned audio on:
 
 ```bash
-# Grab room audio for transcription or awareness
 ffmpeg -y -rtsp_transport tcp \
-  -i "rtsp://100.117.82.124:<port>/<path>" \
-  -t 10 -acodec pcm_s16le workspace/room-audio.wav
+  -i "rtsp://YOUR_USER:YOUR_PASS@100.x.x.x:<port>/<path>" \
+  -t 10 -acodec pcm_s16le room-audio.wav
 ```
 
-### Battery saver mode (low bandwidth)
+### Lower bandwidth
 
-For extended mobile sessions, drop quality to preserve your battery:
-```bash
-# Only pull every 30 seconds at lower res
-curl -s --max-time 5 "http://100.117.82.124:<port>/snapshot.jpg?res=low" \
-  -o workspace/look-mobile.jpg
-```
+Drop resolution in the app, lengthen the poll interval, or both. A query string such as `?res=low` only works if that build documents it. Do not assume it.
 
-## Step 8 — Aiona's Vision Commands
+## Example requests an agent might map to tools
 
-After setup, I'll use these natural commands to see through you:
-
-| I say | What happens |
-|-------|-------------|
-| "Let me look" | Pulls one snapshot, I describe what I see |
-| "Keep watching for the next 5 minutes" | Poll every 10 seconds |
-| "Let me listen" | Grab 15 seconds of audio |
-| "Show me where you are" | Snapshot + I describe the location |
-| "Watch for motion" | Polling loop, I alert on significant changes |
-
----
+| Request | Action |
+|---------|--------|
+| Look once | Pull one frame and describe it |
+| Watch for a few minutes | Poll every 10 seconds, then stop |
+| Listen | Record a short clip only when audio is enabled |
+| Where is the camera pointed | One frame plus a location description from the image |
 
 ## Troubleshooting
 
-| Issue | Fix |
-|-------|-----|
-| No connection over cellular | Verify Tailscale is connected; check cellular data is enabled for both Tailscale and IP Camera Pro |
-| Stream drops when switching apps | Enable "Background Mode" in IP Camera Pro settings |
-| Battery drains fast | Drop to 640x480 @ 10 FPS; plug in if possible |
-| Audio not working | Check microphone permission in iOS Settings → IP Camera Pro |
-| Wrong IP shown | Confirm the IP Camera Pro server is running (app must be open or in background) |
+| Issue | What to try |
+|-------|-------------|
+| No route on cellular | Tailscale connected, cellular data allowed for Tailscale and the camera app |
+| Stream stops in the background | Background mode in the app; iOS may still suspend it |
+| Battery use is high | `640x480` at about 10 FPS, or power the phone |
+| No audio | Microphone permission and the in-app audio toggle |
+| LAN URL works, mesh URL does not | Re-check which interface the app bound, and the port |
 
----
+## Later improvements
 
-## Next: Future Enhancements
+These are optional follow-ups, not extra products:
 
-1. **Bi-directional audio**: Once confirmed working, I can speak to you through your iPhone speaker
-2. **Motion alerts**: I can watch for changes and ping you
-3. **Night mode**: The app should use your iPhone's night mode camera automatically
-4. **Multi-camera**: IP Camera Pro supports multi-cam on iPad — front + back simultaneously
-
----
-
-_Let's test this together and update the URLs once we know the exact port/path format._
+1. Confirm bi-directional audio on the RTSP URL the app prints.
+2. Poll for motion only while a session is active.
+3. Use the phone’s existing low-light camera behavior through the app.
+4. Try the app’s multi-camera mode if you want front and back together.

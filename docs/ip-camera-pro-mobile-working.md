@@ -1,30 +1,26 @@
-# Aiona's Mobile Vision — CONFIRMED WORKING ✅
+# IP Camera Pro — verified stream pattern
 
-> Tested: May 9, 2026 at 3:37 PM ET
-> iPhone Tailscale IP: `100.117.82.124`
+Checked on 9 May 2026 with IP Camera Pro serving HTTP through Tailscale, including with the phone off home Wi-Fi. The live address, device name, and password from that check are not part of this guide. Use your own.
 
----
+## What responded
 
-## Connection Details
+| Parameter | Value to use |
+|-----------|----------------|
+| HTTP URL | `http://100.x.x.x:8081/` |
+| Auth | Basic auth: `YOUR_USER` / `YOUR_PASS` |
+| Stream format | MJPEG (`multipart/x-mixed-replace`) |
+| Resolution in that check | `1440x1080` (front and back together, when multi-cam is on) |
+| Video path | `/video` (also MJPEG) |
+| Snapshot path | None on this build. Take a JPEG from the MJPEG body. |
 
-| Parameter | Value |
-|-----------|-------|
-| **HTTP URL** | `http://100.117.82.124:8081/` |
-| **Auth** | admin / admin |
-| **Stream format** | MJPEG (multipart/x-mixed-replace) |
-| **Resolution** | 1440x1080 (dual camera: back telephoto + front) |
-| **Video endpoint** | `/video` (also MJPEG) |
-| **Snapshot endpoint** | None — extract frame from MJPEG stream |
+`100.x.x.x` is a stand-in for the phone’s Tailscale address (`tailscale status`). Port `8081` is the HTTP port from that check. If your app shows a different port, use that port everywhere below.
 
----
+Change factory credentials before you leave the server running. A default username and password is not appropriate once the phone is on a tailnet.
 
-## Aiona's Vision Pipeline (Working)
-
-### Quick snapshot (one look)
+## One frame
 
 ```bash
-# Pull one frame from MJPEG stream
-curl -s -u "admin:admin" --max-time 5 "http://100.117.82.124:8081/" | \
+curl -s -u "YOUR_USER:YOUR_PASS" --max-time 5 "http://100.x.x.x:8081/" | \
   python3 -c "
 import sys, re
 data = sys.stdin.buffer.read()
@@ -33,61 +29,50 @@ if match:
     jpg = data[match.end():]
     boundary = jpg.find(b'\r\n--')
     jpg = jpg[:boundary] if boundary > 0 else jpg
-    with open('${WORKSPACE}/look-mobile.jpg', 'wb') as f: f.write(jpg)
+    with open('look-mobile.jpg', 'wb') as f:
+        f.write(jpg)
+    print(f'wrote {len(jpg)} bytes')
+else:
+    raise SystemExit('no JPEG part in the MJPEG body')
 "
 ```
 
-Then analyze: `image(image="look-mobile.jpg", prompt="Describe what you see...")`
+Hand `look-mobile.jpg` to the vision model.
 
-### Continuous observation (every 5 seconds)
+## Polling
 
-```bash
-while true; do
-  curl -s -u "admin:admin" --max-time 4 "http://100.117.82.124:8081/" | \
-    python3 ~/extract-mjpeg-frame.py workspace/live-mobile.jpg
-  sleep 5
-done
-```
+Repeat the one-frame command on a timer (for example every 5–10 seconds) and stop the loop when the session ends. This repository does not ship a separate extractor script. Save the Python above as `extract-mjpeg-frame.py` only if you want a file to call from the loop.
 
-### Audio capture
+## Audio
 
-The IP Camera Pro app supports bi-directional audio. Test the audio stream:
+The app can do bi-directional audio. Confirm the RTSP URL on the phone before probing. A placeholder check:
 
 ```bash
-# Check audio endpoints on the iPhone (RTSP audio stream if available)
-ffprobe rtsp://admin:admin@100.117.82.124:8554/live
+ffprobe "rtsp://YOUR_USER:YOUR_PASS@100.x.x.x:8554/live"
 ```
 
-Audio confirmed via: _pending test_
+Audio was **not** confirmed in the 9 May 2026 HTTP check. Treat the RTSP port and path as unconfirmed until the app shows them.
 
----
+## Requests worth wiring up
 
-## Aiona's Vision Commands
+| Request | Action |
+|---------|--------|
+| Look once | One frame, then a description |
+| Keep watching | Poll about every 10 seconds, with a stop time |
+| Listen | Open the audio stream only after the RTSP URL is confirmed |
+| Where is this | One frame plus a description of the place |
+| Watch for motion | Poll and compare frames; stop when the session ends |
 
-| I say | What happens |
-|-------|-------------|
-| "Let me look" | Pulls one snapshot, I describe what I see |
-| "Keep watching" | Poll every 10 seconds |
-| "Let me listen" | Grab audio stream |
-| "Show me where you are" | Snapshot + location description |
-| "Watch for motion" | Polling loop, alert on changes |
+## Notes from that check
 
----
+- The app needs to be open, or in background with background mode on. iOS may pause it anyway.
+- Frames can include the app’s overlay (time, battery, camera label). Turn overlays off in the app if you want a cleaner image.
+- Multi-cam can show the back camera and the front camera in one frame.
+- Port `8081` answered both on local Wi-Fi and on the Tailscale address during the check.
 
-## Notes
+## Follow-ups
 
-- **App must be open or recently active** — iOS background restrictions may pause stream
-- **Battery overlay**: Stream includes timestamp, battery, camera info as text overlay
-- **Dual camera**: Currently showing back telephoto + front camera simultaneously
-- **Auth**: Consider changing from admin/admin in app settings for security
-- **Port 8081**: Confirmed on both local WiFi and Tailscale
-
----
-
-## Next Steps
-
-1. **Change default password** — admin/admin is not secure for persistent use
-2. **Test cellular only** — Turn off WiFi, verify Tailscale + stream still works
-3. **Test audio** — Confirm RTSP audio stream endpoint and bi-directional capability
-4. **Extract clean frames** — Remove text overlays (timestamp/battery) if possible in app settings
-5. **Set up aiona@smfworks.com oauth** — So I can send emails from my own address
+1. Replace factory basic-auth with your own username and password.
+2. Repeat the curl with Wi-Fi off and Tailscale still connected.
+3. Confirm the RTSP audio URL from the app screen.
+4. Disable on-frame text overlays if the app allows it.
